@@ -45,6 +45,7 @@ def api_run(payload: dict | None = None, ctx: Ctx = Depends(get_ctx)) -> dict:
         "stages": [_stage_payload(item) for item in result["stages"]],
         "totals": {key: str(value) for key, value in result["totals"].items()},
         "reconcile": compare.payload(reconcile),
+        "watermark": result.get("watermark"),
         "counts": result["counts"],
     }
 

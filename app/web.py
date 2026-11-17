@@ -31,6 +31,8 @@ STATUS_LABELS = {
     "valid": "有效", "estimate": "估抄", "quarantine": "隔离",
     "normal": "常规", "rollover": "满量翻转", "replacement_first": "新表首读",
     "replacement_last": "换表末读", "ok": "就绪", "skipped": "跳过",
+    "new": "新采信", "backfill": "补采", "duplicate": "重复跳过",
+    "open": "在采", "closed": "已闭合", "unclosed": "未闭合",
 }
 METHOD_LABELS = {
     "normal": "常规", "rollover": "满量翻转",

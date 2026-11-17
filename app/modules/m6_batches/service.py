@@ -12,11 +12,13 @@ from pathlib import Path
 
 from ... import config, errors, manifest, reasons
 from ..m1_ingest import service as m1_service
+from ..m2_contract import coerce
 from ..m2_contract import contract as contract_mod
 from ..m2_contract import service as m2_service
 from ..m3_quality import service as m3_service
 from ..m4_intervals import restore as restore_mod
 from ..m5_months import allocate as allocate_mod
+from ..m8_watermark import service as watermark_service
 from . import compare, history, resume
 
 
@@ -197,6 +199,27 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         "code": None, "flags": item.get("flags", []), "note": item.get("note", ""),
     } for item in (quality["valid"] + quality["estimate"])]
 
+    # ---- 采信边界：本批处置方案随 save_run 同事务落库，失败则旧边界保留 ----
+    record_by_lineno = {item["lineno"]: item for item in records}
+    row_by_lineno = {item["lineno"]: item for item in ingested.rows}
+    quarantine_items = []
+    for item in quarantine:
+        read_at = None
+        record = record_by_lineno.get(item["lineno"])
+        if record is not None:
+            read_at = record["read_at"]
+        else:
+            row = row_by_lineno.get(item["lineno"])
+            if row is not None:
+                try:
+                    read_at = coerce.iso_utc(
+                        coerce.parse_instant(row["cells"].get("read_at")))
+                except coerce.CoerceError:
+                    read_at = None
+        quarantine_items.append({**item, "read_at": read_at})
+    watermark_plan = watermark_service.build_plan(
+        store, quality["valid"] + quality["estimate"], quarantine_items)
+
     store.save_run(
         batch={**batch, "status": "done", "finished_at": finished_at,
                "updated_at": finished_at},
@@ -213,7 +236,9 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         quarantine=quarantine,
         stages=stages,
         totals=totals,
-        manifest_json=manifest_json)
+        manifest_json=manifest_json,
+        watermark={**watermark_plan, "batch_id": batch_id,
+                   "updated_at": finished_at})
 
     batch.update(status="done", finished_at=finished_at)
     return {
@@ -223,6 +248,7 @@ def run(settings, store, *, sample: str | None = None, mode: str = "full") -> di
         "stages": stages,
         "totals": totals,
         "reconciliation": reconcile,
+        "watermark": watermark_service.run_payload(store, watermark_plan, batch_id),
         "ingest": {
             "encoding": ingested.encoding,
             "bom_stripped": ingested.bom_stripped,

@@ -74,11 +74,126 @@ CREATE TABLE IF NOT EXISTS totals (
 CREATE TABLE IF NOT EXISTS manifests (
     batch_id TEXT PRIMARY KEY, json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS watermark_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    boundary TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    batch_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collection_windows (
+    window_date TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    seen INTEGER NOT NULL DEFAULT 0,
+    admitted INTEGER NOT NULL DEFAULT 0,
+    quarantined INTEGER NOT NULL DEFAULT 0,
+    backfilled INTEGER NOT NULL DEFAULT 0,
+    first_batch TEXT NOT NULL,
+    last_batch TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reading_ledger (
+    dedupe_key TEXT PRIMARY KEY,
+    meter_id TEXT NOT NULL,
+    register TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    window_date TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    first_batch TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quarantine_ledger (
+    quarantine_key TEXT PRIMARY KEY,
+    window_date TEXT,
+    code TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    level TEXT NOT NULL,
+    meter_id TEXT,
+    field TEXT,
+    raw_value TEXT,
+    detail TEXT,
+    first_batch TEXT NOT NULL,
+    first_seen TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS admissions (
+    batch_id TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    meter_id TEXT NOT NULL,
+    register TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    window_date TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    PRIMARY KEY (batch_id, dedupe_key)
+);
 """
 
 
 def _dec(text):
     return None if text is None else Decimal(str(text))
+
+
+def _recompute_window_status(conn, boundary: str) -> None:
+    """边界之内的窗口：有采信 → 已闭合，零采信 → 未闭合；边界之外 → 在采。"""
+    conn.execute(
+        """UPDATE collection_windows SET status = CASE
+             WHEN window_date >= ? THEN 'open'
+             WHEN admitted > 0 THEN 'closed'
+             ELSE 'unclosed' END""",
+        (boundary,))
+
+
+def _apply_watermark(conn, plan: dict) -> None:
+    """采信边界随批次同事务落库：台账、窗口计数、边界推进、状态重算。
+
+    任何一步失败都会让外层事务整体回滚，上一份可用边界原样保留。
+    """
+    batch_id = plan["batch_id"]
+    updated_at = plan["updated_at"]
+    for row in plan.get("admissions", []):
+        conn.execute(
+            """INSERT INTO admissions (batch_id,dedupe_key,meter_id,register,read_at,
+                    window_date,kind) VALUES (?,?,?,?,?,?,?)""",
+            (batch_id, row["dedupe_key"], row["meter_id"], row["register"],
+             row["read_at"], row["window_date"], row["kind"]))
+    for row in plan.get("ledger_new", []):
+        conn.execute(
+            """INSERT OR IGNORE INTO reading_ledger
+                    (dedupe_key,meter_id,register,read_at,window_date,kind,first_batch)
+               VALUES (?,?,?,?,?,?,?)""",
+            (row["dedupe_key"], row["meter_id"], row["register"], row["read_at"],
+             row["window_date"], row["kind"], batch_id))
+    for row in plan.get("quarantine_new", []):
+        conn.execute(
+            """INSERT OR IGNORE INTO quarantine_ledger
+                    (quarantine_key,window_date,code,stage,level,meter_id,field,
+                     raw_value,detail,first_batch,first_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (row["quarantine_key"], row.get("window_date"), row["code"], row["stage"],
+             row["level"], row.get("meter_id"), row.get("field"),
+             row.get("raw_value"), row.get("detail"), batch_id, updated_at))
+    for window_date, delta in sorted(plan.get("window_deltas", {}).items()):
+        conn.execute(
+            """INSERT INTO collection_windows
+                    (window_date,status,seen,admitted,quarantined,backfilled,
+                     first_batch,last_batch,updated_at)
+               VALUES (?,'open',?,?,?,?,?,?,?)
+               ON CONFLICT(window_date) DO UPDATE SET
+                 seen = seen + excluded.seen,
+                 admitted = admitted + excluded.admitted,
+                 quarantined = quarantined + excluded.quarantined,
+                 backfilled = backfilled + excluded.backfilled,
+                 last_batch = excluded.last_batch,
+                 updated_at = excluded.updated_at""",
+            (window_date, delta["seen"], delta["admitted"], delta["quarantined"],
+             delta["backfilled"], batch_id, batch_id, updated_at))
+    boundary = plan.get("boundary_after")
+    if boundary:
+        conn.execute(
+            """INSERT INTO watermark_state (id,boundary,updated_at,batch_id)
+               VALUES (1,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 boundary=excluded.boundary, updated_at=excluded.updated_at,
+                 batch_id=excluded.batch_id""",
+            (boundary, updated_at, batch_id))
+        _recompute_window_status(conn, boundary)
 
 
 class Store:
@@ -179,11 +294,11 @@ class Store:
     def save_run(self, *, batch: dict, meters: list[dict], readings: list[dict],
                  intervals: list[dict], allocations: list[dict], bills: list[dict],
                  quarantine: list[dict], stages: list[dict], totals: dict,
-                 manifest_json: dict) -> None:
+                 manifest_json: dict, watermark: dict | None = None) -> None:
         b = batch["batch_id"]
         with self.connect() as conn:
             for table in ("meters", "readings", "intervals", "allocations", "bills",
-                          "quarantine", "stages", "totals"):
+                          "quarantine", "stages", "totals", "admissions"):
                 conn.execute(f"DELETE FROM {table} WHERE batch_id=?", (b,))
             for m in meters:
                 conn.execute(
@@ -266,6 +381,8 @@ class Store:
                  batch["input_digest"], batch["rule_version"],
                  json.dumps(batch.get("params", {}), ensure_ascii=False),
                  batch.get("note", ""), batch.get("updated_at")))
+            if watermark is not None:
+                _apply_watermark(conn, watermark)
 
     # ---------- 读取 ----------
     def load_meters(self, batch_id: str) -> list[dict]:
@@ -340,6 +457,83 @@ class Store:
             row = conn.execute("SELECT json FROM manifests WHERE batch_id=?",
                                (batch_id,)).fetchone()
         return json.loads(row["json"]) if row else None
+
+    # ---------- 采信边界 ----------
+    def load_watermark(self) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT boundary, updated_at, batch_id FROM watermark_state "
+                "WHERE id=1").fetchone()
+        return dict(row) if row else None
+
+    def ledger_membership(self, keys: list[str]) -> set[str]:
+        if not keys:
+            return set()
+        marks = ",".join("?" for _ in keys)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT dedupe_key FROM reading_ledger WHERE dedupe_key IN ({marks})",
+                tuple(keys)).fetchall()
+        return {row["dedupe_key"] for row in rows}
+
+    def quarantine_membership(self, keys: list[str]) -> set[str]:
+        if not keys:
+            return set()
+        marks = ",".join("?" for _ in keys)
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT quarantine_key FROM quarantine_ledger "
+                f"WHERE quarantine_key IN ({marks})",
+                tuple(keys)).fetchall()
+        return {row["quarantine_key"] for row in rows}
+
+    def list_windows(self, status: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM collection_windows"
+        args: tuple = ()
+        if status:
+            sql += " WHERE status=?"
+            args = (status,)
+        sql += " ORDER BY window_date"
+        return self._all(sql, args)
+
+    def load_admissions(self, batch_id: str) -> list[dict]:
+        return self._all(
+            "SELECT * FROM admissions WHERE batch_id=? ORDER BY window_date, meter_id,"
+            " register, read_at", (batch_id,))
+
+    def load_quarantine_ledger(self, before: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM quarantine_ledger"
+        args: tuple = ()
+        if before:
+            sql += " WHERE window_date IS NOT NULL AND window_date < ?"
+            args = (before,)
+        sql += " ORDER BY window_date, quarantine_key"
+        return self._all(sql, args)
+
+    def count_ledger(self) -> dict:
+        with self.connect() as conn:
+            return {t: conn.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"]
+                    for t in ("reading_ledger", "quarantine_ledger",
+                              "collection_windows", "admissions")}
+
+    def advance_watermark(self, *, boundary: str, batch_id: str,
+                          updated_at: str) -> dict:
+        """显式推进边界：只进不退；推进与窗口状态重算在同一个事务里。"""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT boundary FROM watermark_state WHERE id=1").fetchone()
+            current = row["boundary"] if row else None
+            if current is not None and boundary <= current:
+                return {"boundary": current, "advanced": False}
+            conn.execute(
+                """INSERT INTO watermark_state (id,boundary,updated_at,batch_id)
+                   VALUES (1,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     boundary=excluded.boundary, updated_at=excluded.updated_at,
+                     batch_id=excluded.batch_id""",
+                (boundary, updated_at, batch_id))
+            _recompute_window_status(conn, boundary)
+        return {"boundary": boundary, "advanced": True}
 
     def count_rows(self, batch_id: str) -> dict:
         tables = ("meters", "readings", "intervals", "allocations", "bills", "quarantine")

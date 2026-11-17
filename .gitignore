@@ -23,6 +23,8 @@ out/
 coverage/
 __pycache__/
 *.pyc
+var/
+*.sqlite
 .venv/
 venv/
 target/

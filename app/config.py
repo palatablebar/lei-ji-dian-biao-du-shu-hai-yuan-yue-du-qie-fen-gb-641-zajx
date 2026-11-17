@@ -74,6 +74,7 @@ REQUIRED_COLUMNS = ("meter_id", "register", "read_at", "reading")
 SAMPLES = {
     "readings_dirty.csv": "脏样例 · 13 类问题",
     "readings_clean.csv": "干净样例",
+    "readings_late.csv": "迟到补采样例",
     "readings_gbk.csv": "GBK 中文表头",
     "readings_truncated.csv": "末行截断",
     "readings_empty.csv": "空文件",

@@ -37,6 +37,88 @@
 
 <section class="panel">
   <div class="panel-head">
+    <h2 class="panel-title">采信边界</h2>
+    <span class="panel-sub mono">
+      {% if watermark.boundary %}边界 {{ watermark.boundary }}（不含）· 推进于 {{ watermark.updated_at|localdt }}{% else %}尚未建立边界{% endif %}
+    </span>
+  </div>
+  <section class="kpis" aria-label="本次纳入">
+    <div class="kpi"><span class="kpi-label">本次新采信</span><span class="kpi-value mono">{{ admissions|selectattr('kind', 'equalto', 'new')|list|length }}</span></div>
+    <div class="kpi"><span class="kpi-label">迟到补采</span><span class="kpi-value mono">{{ admissions|selectattr('kind', 'equalto', 'backfill')|list|length }}</span></div>
+    <div class="kpi"><span class="kpi-label">重复跳过</span><span class="kpi-value mono">{{ admissions|selectattr('kind', 'equalto', 'duplicate')|list|length }}</span></div>
+    <div class="kpi"><span class="kpi-label">未闭合窗口</span><span class="kpi-value mono">{{ watermark.counts.unclosed }}</span></div>
+  </section>
+  {% if admissions %}
+  <div class="table-wrap">
+    <table class="table table-dense" data-sortable>
+      <thead><tr><th data-key="window_date">窗口</th><th data-key="meter_id">表号</th>
+        <th data-key="register">寄存器</th><th data-key="read_at">抄表时间</th>
+        <th data-key="kind">本次处置</th></tr></thead>
+      <tbody>
+        {% for row in admissions %}
+        <tr>
+          <td class="mono">{{ row.window_date }}</td>
+          <td class="mono">{{ row.meter_id }}</td>
+          <td>{{ row.register|reg }}</td>
+          <td class="mono">{{ row.read_at|localdt }}</td>
+          <td><span class="badge badge-{{ 'warn' if row.kind == 'backfill' else ('ok' if row.kind == 'new' else 'info') }}">{{ row.kind|status }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if watermark.unclosed %}
+  <div class="panel-head">
+    <h3 class="panel-title">更早窗口仍未闭合</h3>
+    <span class="panel-sub mono">边界已过但没有任何采信记录，等迟到补采</span>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-dense" data-sortable>
+      <thead><tr><th data-key="window_date">窗口</th><th data-key="seen">已见键数</th>
+        <th data-key="quarantined">隔离</th><th data-key="first_batch">首次批次</th></tr></thead>
+      <tbody>
+        {% for row in watermark.unclosed %}
+        <tr>
+          <td class="mono">{{ row.window_date }}</td>
+          <td class="num mono">{{ row.seen }}</td>
+          <td class="num mono">{{ row.quarantined }}</td>
+          <td class="mono">{{ row.first_batch }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+  {% if earlier_quarantine %}
+  <div class="panel-head">
+    <h3 class="panel-title">更早窗口隔离留存</h3>
+    <span class="panel-sub mono">跨批次保留，不随当前批次切换消失</span>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-dense" data-sortable>
+      <thead><tr><th data-key="window_date">窗口</th><th data-key="code">原因码</th>
+        <th data-key="meter_id">表号</th><th data-key="raw_value">原始值</th>
+        <th data-key="detail">说明</th><th data-key="first_batch">首次批次</th></tr></thead>
+      <tbody>
+        {% for row in earlier_quarantine %}
+        <tr>
+          <td class="mono">{{ row.window_date }}</td>
+          <td class="mono">{{ row.code }}</td>
+          <td class="mono">{{ row.meter_id }}</td>
+          <td class="mono cell-raw" title="{{ row.raw_value }}">{{ row.raw_value }}</td>
+          <td class="cell-note">{{ row.detail }}</td>
+          <td class="mono">{{ row.first_batch }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <div class="panel-head">
     <h2 class="panel-title">读数行</h2>
     <span class="panel-sub mono">{{ readings|length }} 行</span>
   </div>

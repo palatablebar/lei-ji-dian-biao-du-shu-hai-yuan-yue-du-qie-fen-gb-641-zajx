@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from ... import errors, reasons
+from ..m8_watermark import service as watermark_service
 
 
 def replay_payload(batch: dict, store) -> dict:
@@ -19,6 +20,7 @@ def replay_payload(batch: dict, store) -> dict:
         "stages": stages,
         "totals": totals,
         "counts": store.count_rows(batch["batch_id"]),
+        "watermark": watermark_service.replay_payload(store, batch["batch_id"]),
     }
 
 

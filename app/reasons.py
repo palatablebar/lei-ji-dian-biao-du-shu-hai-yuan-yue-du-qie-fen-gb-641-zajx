@@ -16,6 +16,7 @@ REASONS: dict[str, dict[str, str]] = {
     "E_SAMPLE_UNKNOWN": {"label": "样例不存在", "level": "error"},
     "E_CONTRACT_INVALID": {"label": "表计契约无效", "level": "error"},
     "E_BATCH_NOT_FOUND": {"label": "批次不存在", "level": "error"},
+    "E_WATERMARK_INVALID": {"label": "边界日期无法解析", "level": "error"},
     "Q_COLUMN_COUNT": {"label": "列数与表头不一致", "level": "error"},
     "Q_TRUNCATED_ROW": {"label": "末行被截断", "level": "error"},
     "Q_MISSING_READING": {"label": "读数为空值哨兵", "level": "error"},

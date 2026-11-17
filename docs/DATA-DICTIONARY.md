@@ -82,3 +82,14 @@
 标记 `K_*`：`K_ROLLOVER`、`K_REPLACEMENT_FIRST`、`K_ESTIMATE_SKIPPED`、`K_CHARSET_FALLBACK`、`K_BOM_STRIPPED`、`K_SEGMENT_SPLIT`、`K_TRUNCATED_TAIL`、`K_TOU_ADJUSTED`、`K_BILL_ROUNDED`、`K_UNIT_ASSUMED`、`K_UNIT_CONVERTED`、`K_DUPLICATE_IDENTICAL`。
 
 唯一来源：`app/reasons.py`；页面与导出的原因文案都从它取。
+
+## 10 采信边界（水位线 + 窗口台账）
+
+- 窗口：抄表时间所在的本地自然日（`Asia/Shanghai`），格式 `YYYY-MM-DD`。窗口由数据驱动登记：凡被文件触及（采信，或可解析出时间的隔离行）的窗口都入台账，重启不丢。
+- 边界：本地日期，语义为「该日（不含）之前的窗口已被日常推进覆盖」。每次成功运行后推进到 `max(现边界, 本批最大窗口 + 1 天)`，只进不退；`POST /api/watermark/advance` 可在没有文件到达的日子显式推进。
+- 读数台账：业务键同第 6 节 `(meter_id, register, read_at)`，记录首次采信批次与类别。重复执行同一采集段时全部键命中台账，新增为零。
+- 处置类别：`new`（边界之后的新采信）、`backfill`（窗口日期早于当前边界的迟到补采，仍入账）、`duplicate`（台账已有，跳过）。
+- 窗口状态：`open`（窗口 ≥ 边界，在采）、`closed`（边界已过且有采信）、`unclosed`（边界已过但零采信，即缺记录的旧窗口，常列处理页面）。补采到达 `unclosed` 窗口使其转为 `closed`。
+- 窗口计数：`seen` 累计新见到的业务键数（采信 + 可归属隔离），`admitted` / `quarantined` / `backfilled` 为对应去向的累计数；重跑同一采集段时全部增量为零。
+- 隔离台账：跨批次保留隔离证据（内容哈希去重），能解析出 `read_at` 的隔离行归属到窗口；`Q_BAD_TIME` 等无法解析时间的行只进台账、不归属窗口。
+- 一致性：台账、窗口计数、边界推进与批次数据在同一个事务里写入；任何一步失败整体回滚，上一份可用边界原样保留。

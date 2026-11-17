@@ -8,6 +8,7 @@ from ...web import Ctx, get_ctx, render
 from ..m3_quality import quarantine as quarantine_mod
 from ..m6_batches import resume as resume_mod
 from ..m6_batches import service as batch_service
+from ..m8_watermark import service as watermark_service
 from . import service
 
 router = APIRouter(tags=["M1 读数采信"])
@@ -77,12 +78,20 @@ def page_readings(request: Request, batch_id: str | None = None,
     readings: list[dict] = []
     quarantine: list[dict] = []
     stages: list[dict] = []
+    admissions: list[dict] = []
     if batch is not None:
         readings = ctx.store.load_readings(batch["batch_id"])
         quarantine = ctx.store.load_quarantine(batch["batch_id"])
         stages = ctx.store.load_stages(batch["batch_id"])
+        admissions = ctx.store.load_admissions(batch["batch_id"])
+    watermark = watermark_service.payload(ctx.store)
+    boundary = watermark["boundary"]
+    earlier_quarantine = (ctx.store.load_quarantine_ledger(before=boundary)
+                          if boundary else [])
     return render(request, "readings.html", page="readings", page_title="读数诊断",
                   batch=batch, readings=readings, quarantine=quarantine,
                   stages=stages, samples=service.available_samples(ctx.settings),
                   distribution=quarantine_mod.distribution(quarantine),
-                  qsummary=quarantine_mod.summary(quarantine))
+                  qsummary=quarantine_mod.summary(quarantine),
+                  admissions=admissions, watermark=watermark,
+                  earlier_quarantine=earlier_quarantine)
