@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page-head">
+  <div>
+    <h1 class="page-title">月度分摊</h1>
+    <p class="page-meta mono">
+      {% if batch %}{{ batch.batch_id }} · {{ batch.sample }} · {{ batch.created_at|localdt }}{% else %}未运行{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    <button class="btn btn-primary" id="allocate-button" type="button">重算分摊</button>
+    <a class="btn btn-ghost" href="/api/export/monthly.csv">月度 CSV</a>
+  </div>
+</section>
+
+<div class="notice" id="notice" role="status" hidden></div>
+
+{% if not groups %}
+<section class="empty"><p class="empty-line">没有分摊结果，先跑一次处理。</p></section>
+{% else %}
+<section class="kpis" aria-label="月度合计">
+  <div class="kpi"><span class="kpi-label">月份</span><span class="kpi-value mono">{{ totals.month_count }}</span></div>
+  <div class="kpi"><span class="kpi-label">月度用量</span><span class="kpi-value mono">{{ totals.month_usage|kwh }}</span><span class="kpi-unit">kWh</span></div>
+  <div class="kpi"><span class="kpi-label">账单金额</span><span class="kpi-value mono">{{ totals.bill_amount|yuan }}</span><span class="kpi-unit">元</span></div>
+  <div class="kpi"><span class="kpi-label">账单</span><span class="kpi-value mono">{{ totals.bill_count }}</span></div>
+  <div class="kpi"><span class="kpi-label">尾差组</span><span class="kpi-value mono">{{ adjustments }}</span></div>
+</section>
+
+{% for group in groups %}
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title mono">{{ group.month }}</h2>
+    <span class="panel-sub mono">合计 {{ group.total|kwh }} kWh</span>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-dense">
+      <thead><tr><th>表号</th><th>寄存器</th><th class="num">用量</th><th class="num">单位</th><th>尾差</th></tr></thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr>
+          <td class="mono">{{ row.meter_id }}</td>
+          <td>{{ row.register|reg }}</td>
+          <td class="num mono">{{ row.usage_kwh|kwh }}</td>
+          <td class="num unit">kWh</td>
+          <td>{% if row.tou_adjusted %}<span class="badge badge-warn">并入</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2 class="panel-title">账单</h2>
+    <span class="panel-sub mono">{{ bills|length }} 张</span>
+  </div>
+  <div class="table-wrap">
+    <table class="table table-dense" data-sortable>
+      <thead><tr><th data-key="month">月份</th><th data-key="meter_id">表号</th><th data-key="usage_kwh" class="num">用量</th>
+        <th data-key="amount_yuan" class="num">金额</th><th data-key="adjust_cents" class="num">尾差</th><th>分项</th></tr></thead>
+      <tbody>
+        {% for row in bills %}
+        <tr>
+          <td class="mono">{{ row.month }}</td>
+          <td class="mono">{{ row.meter_id }}</td>
+          <td class="num mono">{{ row.usage_kwh|kwh }}</td>
+          <td class="num mono strong">{{ row.amount_yuan|yuan }}</td>
+          <td class="num mono">{{ row.adjust_cents }}</td>
+          <td class="cell-flags mono">
+            {% for item in row.components %}<span class="chip">{{ item.register }} {{ item.amount }}</span>{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js" type="module"></script>
+<script src="/static/table.js" type="module"></script>
+{% endblock %}
